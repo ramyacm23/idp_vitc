@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.local
+*.log
+
+.vscode/
+.idea/
+.DS_Store
+
+# Empty checkout of this repository; the workspace root is the project being pushed.
+idp_vitc/

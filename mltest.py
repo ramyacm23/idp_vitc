@@ -1,14 +1,18 @@
 # ============================================================
-# VITALSYNC AI - ML RISK SCORE PROTOTYPE
-# Using FAKE sensor data
+# VITALSYNC AI - ML RISK SCORE MODEL
+# Using REAL Mendeley IoT Health Monitoring Dataset
+# Algorithm: XGBoost Classifier
 # ============================================================
 
+import os
+import joblib
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -17,102 +21,64 @@ from sklearn.metrics import (
 )
 
 # ------------------------------------------------------------
-# 1. CREATE FAKE SENSOR DATA
+# 1. LOAD REAL DATASET
 # ------------------------------------------------------------
 
-np.random.seed(42)
+CSV_PATH = "remote_health_monitoring.csv"
 
-N = 2000
+if not os.path.exists(CSV_PATH):
+    raise FileNotFoundError(
+        f"Dataset '{CSV_PATH}' not found in root directory! "
+        "Please download the dataset from Mendeley Data and place it here."
+    )
 
-data = pd.DataFrame({
-    "heart_rate": np.random.normal(78, 15, N),
-    "spo2": np.random.normal(97, 2, N),
-    "temperature": np.random.normal(36.8, 0.6, N),
-    "respiratory_rate": np.random.normal(17, 4, N),
+data = pd.read_csv(CSV_PATH)
 
-    # ECG-derived features (FAKE for now)
-    "hrv": np.random.normal(55, 20, N),
-    "qrs_duration": np.random.normal(90, 15, N),
-
-    # Motion-derived features (FAKE)
-    "motion_level": np.random.normal(0.5, 0.3, N),
-    "fall_detected": np.random.choice([0, 1], N, p=[0.95, 0.05])
-})
+# Rename oxygen_level to spo2 for consistency
+if "oxygen_level" in data.columns:
+    data.rename(columns={"oxygen_level": "spo2"}, inplace=True)
 
 # ------------------------------------------------------------
-# 2. KEEP VALUES WITHIN REALISTIC RANGES
+# 2. DISPLAY DATASET OVERVIEW
 # ------------------------------------------------------------
 
-data["heart_rate"] = data["heart_rate"].clip(40, 160)
-data["spo2"] = data["spo2"].clip(75, 100)
-data["temperature"] = data["temperature"].clip(34, 41)
-data["respiratory_rate"] = data["respiratory_rate"].clip(8, 40)
-data["hrv"] = data["hrv"].clip(5, 120)
-data["qrs_duration"] = data["qrs_duration"].clip(50, 160)
-data["motion_level"] = data["motion_level"].clip(0, 2)
-
-# ------------------------------------------------------------
-# 3. CREATE FAKE HEALTH/RISK LABEL
-# ------------------------------------------------------------
-# 0 = Low Risk
-# 1 = Moderate Risk
-# 2 = High Risk
-# 3 = Critical Risk
-#
-# IMPORTANT:
-# These rules are ONLY for generating fake training labels.
-# They are NOT medical diagnostic rules.
-
-risk_score_fake = (
-    (100 - data["spo2"]) * 5
-    + abs(data["heart_rate"] - 75) * 0.5
-    + abs(data["temperature"] - 36.8) * 8
-    + abs(data["respiratory_rate"] - 16) * 1.5
-    + (60 - data["hrv"]).clip(lower=0) * 0.2
-    + (data["qrs_duration"] - 100).clip(lower=0) * 0.1
-    + data["fall_detected"] * 30
-)
-
-# Convert the fake score into classes
-data["risk_class"] = pd.cut(
-    risk_score_fake,
-    bins=[-np.inf, 20, 40, 60, np.inf],
-    labels=[0, 1, 2, 3]
-).astype(int)
-
-# ------------------------------------------------------------
-# 4. DISPLAY DATASET
-# ------------------------------------------------------------
-
-print("First 10 rows of fake dataset:")
-print(data.head(10).to_string(index=False))
+print("First 5 rows of real dataset:")
+print(data.head(5).to_string(index=False))
 
 print("\nDataset shape:")
 print(data.shape)
 
-print("\nRisk class distribution:")
-print(data["risk_class"].value_counts().sort_index())
+print("\nHealth condition class distribution:")
+print(data["health_condition"].value_counts())
 
 # ------------------------------------------------------------
-# 5. SELECT INPUT FEATURES
+# 3. SELECT INPUT FEATURES & TARGET
 # ------------------------------------------------------------
 
 features = [
     "heart_rate",
     "spo2",
     "temperature",
-    "respiratory_rate",
-    "hrv",
-    "qrs_duration",
-    "motion_level",
-    "fall_detected"
+    "acc_x",
+    "acc_y",
+    "acc_z",
+    "gyro_x",
+    "gyro_y",
+    "gyro_z",
+    "acceleration_magnitude",
+    "gyro_magnitude",
+    "heart_rate_variability"
 ]
 
 X = data[features]
-y = data["risk_class"]
+
+# Target variable: health_condition (6 classes)
+label_encoder = LabelEncoder()
+y = label_encoder.fit_transform(data["health_condition"])
+class_names = list(label_encoder.classes_)
 
 # ------------------------------------------------------------
-# 6. SPLIT DATA INTO TRAINING AND TESTING
+# 4. SPLIT DATA INTO TRAINING AND TESTING
 # ------------------------------------------------------------
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -124,193 +90,156 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 print("\nTraining samples:", len(X_train))
-print("Testing samples:", len(X_test))
+print("Testing samples :", len(X_test))
 
 # ------------------------------------------------------------
-# 7. CREATE RANDOM FOREST MODEL
+# 5. CREATE AND TRAIN XGBOOST MODEL
 # ------------------------------------------------------------
 
-model = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=10,
+model = xgb.XGBClassifier(
+    n_estimators=150,
+    max_depth=4,
+    learning_rate=0.05,
+    objective="multi:softprob",
+    num_class=len(class_names),
     random_state=42,
-    class_weight="balanced"
+    eval_metric="mlogloss"
 )
 
-# Train
+# Train XGBoost
 model.fit(X_train, y_train)
 
-print("\nModel training completed!")
+print("\nXGBoost Model training completed!")
 
 # ------------------------------------------------------------
-# 8. TEST MODEL
+# 6. TEST MODEL & EVALUATE ACCURACY
 # ------------------------------------------------------------
 
 y_pred = model.predict(X_test)
-
 accuracy = accuracy_score(y_test, y_pred)
 
-print("\nModel Accuracy:", round(accuracy * 100, 2), "%")
+print(f"\nModel Accuracy: {accuracy * 100:.2f}%")
 
 print("\nClassification Report:")
 print(
     classification_report(
         y_test,
         y_pred,
+        target_names=class_names,
         zero_division=0
     )
 )
 
+# Save trained model and label encoder
+joblib.dump(model, "vitalsync_xgboost.pkl")
+joblib.dump(label_encoder, "vitalsync_label_encoder.pkl")
+print("Saved artifacts: 'vitalsync_xgboost.pkl' & 'vitalsync_label_encoder.pkl'")
+
 # ------------------------------------------------------------
-# 9. CONFUSION MATRIX
+# 7. CONFUSION MATRIX
 # ------------------------------------------------------------
 
 cm = confusion_matrix(y_test, y_pred)
 
+fig, ax = plt.subplots(figsize=(8, 6))
 disp = ConfusionMatrixDisplay(
     confusion_matrix=cm,
-    display_labels=[
-        "Low",
-        "Moderate",
-        "High",
-        "Critical"
-    ]
+    display_labels=class_names
 )
 
-disp.plot()
-plt.title("VitalSync AI - Confusion Matrix")
+disp.plot(ax=ax, cmap="Blues")
+plt.title("VitalSync AI - Real Data XGBoost Confusion Matrix")
+plt.xticks(rotation=30)
+plt.tight_layout()
 plt.show()
 
 # ------------------------------------------------------------
-# 10. FEATURE IMPORTANCE
+# 8. FEATURE IMPORTANCE
 # ------------------------------------------------------------
 
 importance = pd.DataFrame({
     "Feature": features,
     "Importance": model.feature_importances_
-})
-
-importance = importance.sort_values(
-    by="Importance",
-    ascending=False
-)
+}).sort_values(by="Importance", ascending=False)
 
 print("\nFeature Importance:")
 print(importance.to_string(index=False))
 
 plt.figure(figsize=(10, 5))
-
-plt.bar(
-    importance["Feature"],
-    importance["Importance"]
-)
-
+plt.bar(importance["Feature"], importance["Importance"], color="skyblue")
 plt.xticks(rotation=45)
-plt.ylabel("Importance")
-plt.title("Feature Importance - VitalSync AI")
+plt.ylabel("Importance Score")
+plt.title("XGBoost Feature Importance - VitalSync AI")
 plt.tight_layout()
 plt.show()
 
 # ------------------------------------------------------------
-# 11. FUNCTION TO PREDICT A NEW PERSON
+# 9. INFERENCE FUNCTION FOR PATIENT PREDICTION
 # ------------------------------------------------------------
 
-def predict_risk(
+def predict_patient_condition(
     heart_rate,
     spo2,
     temperature,
-    respiratory_rate,
-    hrv,
-    qrs_duration,
-    motion_level,
-    fall_detected
+    acc_x, acc_y, acc_z,
+    gyro_x, gyro_y, gyro_z,
+    acceleration_magnitude,
+    gyro_magnitude,
+    heart_rate_variability
 ):
-
     patient = pd.DataFrame([[
         heart_rate,
         spo2,
         temperature,
-        respiratory_rate,
-        hrv,
-        qrs_duration,
-        motion_level,
-        fall_detected
+        acc_x, acc_y, acc_z,
+        gyro_x, gyro_y, gyro_z,
+        acceleration_magnitude,
+        gyro_magnitude,
+        heart_rate_variability
     ]], columns=features)
 
-    # Predict class
-    predicted_class = model.predict(patient)[0]
-
-    # Probability of each class
+    # Predict class and probabilities
+    pred_idx = model.predict(patient)[0]
+    predicted_label = label_encoder.inverse_transform([pred_idx])[0]
     probabilities = model.predict_proba(patient)[0]
 
-    # Convert probability into 0-100 risk score
-    risk_score = (
-        probabilities[0] * 0
-        + probabilities[1] * 33
-        + probabilities[2] * 66
-        + probabilities[3] * 100
-    )
-
-    # Risk category
-    categories = {
-        0: "LOW",
-        1: "MODERATE",
-        2: "HIGH",
-        3: "CRITICAL"
-    }
-
-    category = categories[predicted_class]
+    # Calculate overall risk percentage (0-100) based on abnormal class probabilities
+    normal_idx = np.where(label_encoder.classes_ == "Normal")[0][0]
+    normal_prob = probabilities[normal_idx] if len(normal_idx) > 0 else 0
+    risk_score = (1.0 - normal_prob) * 100
 
     print("\n===================================")
-    print("        VITALSYNC AI RESULT")
+    print("        VITALSYNC AI RESULT        ")
     print("===================================")
-
-    print(f"Heart Rate       : {heart_rate} BPM")
-    print(f"SpO2             : {spo2}%")
-    print(f"Temperature      : {temperature} °C")
-    print(f"Respiratory Rate : {respiratory_rate} /min")
-    print(f"HRV              : {hrv} ms")
-    print(f"QRS Duration     : {qrs_duration} ms")
-    print(f"Motion Level     : {motion_level}")
-    print(f"Fall Detected    : {fall_detected}")
-
+    print(f"Heart Rate   : {heart_rate} BPM")
+    print(f"SpO2         : {spo2}%")
+    print(f"Temperature  : {temperature} °C")
+    print(f"Acc Magnitude: {acceleration_magnitude} m/s²")
     print("-----------------------------------")
-
-    print(f"Risk Score       : {risk_score:.2f}/100")
-    print(f"Risk Category    : {category}")
-
+    print(f"Predicted State : {predicted_label}")
+    print(f"Health Risk Score: {risk_score:.2f} / 100")
     print("===================================")
 
-    return risk_score, category
-
+    return risk_score, predicted_label
 
 # ------------------------------------------------------------
-# 12. TEST WITH A FAKE HEALTHY PERSON
+# 10. TEST INFERENCE WITH SAMPLE DATA
 # ------------------------------------------------------------
 
-predict_risk(
-    heart_rate=72,
-    spo2=98,
-    temperature=36.7,
-    respiratory_rate=15,
-    hrv=70,
-    qrs_duration=88,
-    motion_level=0.4,
-    fall_detected=0
+print("\n--- Test Sample 1: Normal Patient ---")
+predict_patient_condition(
+    heart_rate=72.0, spo2=98.0, temperature=36.6,
+    acc_x=0.01, acc_y=0.98, acc_z=0.10,
+    gyro_x=0.0, gyro_y=0.01, gyro_z=0.0,
+    acceleration_magnitude=0.98, gyro_magnitude=0.01,
+    heart_rate_variability=45.0
 )
 
-
-# ------------------------------------------------------------
-# 13. TEST WITH A FAKE HIGH-RISK PERSON
-# ------------------------------------------------------------
-
-predict_risk(
-    heart_rate=130,
-    spo2=88,
-    temperature=39.2,
-    respiratory_rate=30,
-    hrv=20,
-    qrs_duration=125,
-    motion_level=1.5,
-    fall_detected=1
+print("\n--- Test Sample 2: Fall / Critical Patient ---")
+predict_patient_condition(
+    heart_rate=120.0, spo2=89.0, temperature=38.5,
+    acc_x=2.5, acc_y=0.10, acc_z=4.2,
+    gyro_x=1.8, gyro_y=2.1, gyro_z=1.5,
+    acceleration_magnitude=4.89, gyro_magnitude=3.13,
+    heart_rate_variability=15.0
 )
